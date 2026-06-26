@@ -100,38 +100,63 @@ def fmt(value, decimals=0):
     return f"${value:,.{decimals}f}"
 
 
-# CoinGecko 幣種 ID 對照表（免費API，無地區封鎖）
-COINGECKO_IDS = {
-    "BTCUSDT": "bitcoin",
-    "ETHUSDT": "ethereum",
-    "XRPUSDT": "ripple",
-}
-
-def fetch_ohlcv(symbol, interval=INTERVAL, limit=LOOKBACK_DAYS):
-    """從 CoinGecko 免費 API 抓取日K線（無需 API Key，無地區封鎖）"""
-    coin_id = COINGECKO_IDS.get(symbol)
-    if not coin_id:
-        raise Exception(f"找不到 {symbol} 對應的 CoinGecko ID")
-    days = min(limit, 365)
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
-    params = {"vs_currency": "usd", "days": days}
+def fetch_ohlcv_bybit(symbol, limit=LOOKBACK_DAYS):
+    """Bybit 公開 API（無需 API Key，GitHub Actions 可用）"""
+    url = "https://api.bybit.com/v5/market/kline"
+    params = {"category": "spot", "symbol": symbol, "interval": "D", "limit": limit}
     headers = {"User-Agent": "Mozilla/5.0"}
     resp = requests.get(url, params=params, headers=headers, timeout=15)
     resp.raise_for_status()
-    raw = resp.json()
-    # CoinGecko OHLC 格式：[timestamp, open, high, low, close]
-    df = pd.DataFrame(raw, columns=["open_time", "open", "high", "low", "close"])
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-    # 以日期分組，取每天最後一根K線
-    df["date"] = df["open_time"].dt.date
-    df = df.groupby("date").last().reset_index()
-    df["open_time"] = pd.to_datetime(df["date"])
-    df = df.drop(columns=["date"])
-    for col in ["open", "high", "low", "close"]:
+    data = resp.json()
+    if data.get("retCode") != 0:
+        raise Exception(f"Bybit API 錯誤：{data.get('retMsg')}")
+    # Bybit 回傳格式：[startTime, openPrice, highPrice, lowPrice, closePrice, volume, turnover]
+    # 由新到舊排列，需要反轉
+    rows = data["result"]["list"][::-1]
+    df = pd.DataFrame(rows, columns=["open_time", "open", "high", "low", "close", "volume", "turnover"])
+    df["open_time"] = pd.to_datetime(df["open_time"].astype(float), unit="ms")
+    for col in ["open", "high", "low", "close", "volume"]:
         df[col] = df[col].astype(float)
-    # CoinGecko OHLC 無成交量，補 0 避免程式出錯
-    df["volume"] = 0.0
-    data = None  # 保留變數避免後續參考錯誤
+    return df[["open_time", "open", "high", "low", "close", "volume"]]
+
+
+def fetch_ohlcv_okx(symbol, limit=LOOKBACK_DAYS):
+    """OKX 公開 API（備援，無需 API Key）"""
+    # OKX symbol 格式：BTC-USDT
+    okx_symbol = symbol.replace("USDT", "-USDT")
+    url = "https://www.okx.com/api/v5/market/candles"
+    params = {"instId": okx_symbol, "bar": "1D", "limit": min(limit, 300)}
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(url, params=params, headers=headers, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("code") != "0":
+        raise Exception(f"OKX API 錯誤：{data.get('msg')}")
+    # OKX 回傳格式：[ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]，由新到舊
+    rows = data["data"][::-1]
+    df = pd.DataFrame(rows, columns=["open_time","open","high","low","close","volume","volCcy","volCcyQuote","confirm"])
+    df["open_time"] = pd.to_datetime(df["open_time"].astype(float), unit="ms")
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = df[col].astype(float)
+    return df[["open_time", "open", "high", "low", "close", "volume"]]
+
+
+def fetch_ohlcv(symbol, interval=INTERVAL, limit=LOOKBACK_DAYS):
+    """嘗試多個交易所 API，第一個成功就用，全部失敗才報錯"""
+    sources = [
+        ("Bybit",  fetch_ohlcv_bybit),
+        ("OKX",    fetch_ohlcv_okx),
+    ]
+    last_error = None
+    for name, func in sources:
+        try:
+            df = func(symbol, limit)
+            print(f"  ✅ 資料來源：{name}")
+            return df
+        except Exception as e:
+            print(f"  ⚠️ {name} 失敗：{e}")
+            last_error = e
+    raise Exception(f"所有資料來源均失敗，最後錯誤：{last_error}")
     df = pd.DataFrame(data, columns=[
         "open_time", "open", "high", "low", "close", "volume",
         "close_time", "quote_volume", "trades",
