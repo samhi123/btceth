@@ -100,28 +100,38 @@ def fmt(value, decimals=0):
     return f"${value:,.{decimals}f}"
 
 
+# CoinGecko 幣種 ID 對照表（免費API，無地區封鎖）
+COINGECKO_IDS = {
+    "BTCUSDT": "bitcoin",
+    "ETHUSDT": "ethereum",
+    "XRPUSDT": "ripple",
+}
+
 def fetch_ohlcv(symbol, interval=INTERVAL, limit=LOOKBACK_DAYS):
-    # 多個備用端點，依序嘗試，避免地區封鎖（HTTP 451）
-    endpoints = [
-        "https://api1.binance.com/api/v3/klines",
-        "https://api2.binance.com/api/v3/klines",
-        "https://api3.binance.com/api/v3/klines",
-        "https://api.binance.com/api/v3/klines",
-    ]
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    last_error = None
-    data = None
-    for url in endpoints:
-        try:
-            resp = requests.get(url, params=params, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            break
-        except Exception as e:
-            last_error = e
-            continue
-    if data is None:
-        raise Exception(f"所有 Binance 端點均無法連線：{last_error}")
+    """從 CoinGecko 免費 API 抓取日K線（無需 API Key，無地區封鎖）"""
+    coin_id = COINGECKO_IDS.get(symbol)
+    if not coin_id:
+        raise Exception(f"找不到 {symbol} 對應的 CoinGecko ID")
+    days = min(limit, 365)
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
+    params = {"vs_currency": "usd", "days": days}
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(url, params=params, headers=headers, timeout=15)
+    resp.raise_for_status()
+    raw = resp.json()
+    # CoinGecko OHLC 格式：[timestamp, open, high, low, close]
+    df = pd.DataFrame(raw, columns=["open_time", "open", "high", "low", "close"])
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+    # 以日期分組，取每天最後一根K線
+    df["date"] = df["open_time"].dt.date
+    df = df.groupby("date").last().reset_index()
+    df["open_time"] = pd.to_datetime(df["date"])
+    df = df.drop(columns=["date"])
+    for col in ["open", "high", "low", "close"]:
+        df[col] = df[col].astype(float)
+    # CoinGecko OHLC 無成交量，補 0 避免程式出錯
+    df["volume"] = 0.0
+    data = None  # 保留變數避免後續參考錯誤
     df = pd.DataFrame(data, columns=[
         "open_time", "open", "high", "low", "close", "volume",
         "close_time", "quote_volume", "trades",
@@ -213,7 +223,12 @@ def check_breakout(df, resistance):
 
 
 def check_volume_confirm(df, multiplier=VOLUME_MULTIPLIER):
+    # CoinGecko OHLC API 不提供成交量，自動回傳中性結果
+    if df["volume"].sum() == 0:
+        return None, None  # None 表示無資料，評分時跳過
     avg_vol_20 = df["volume"].iloc[-21:-1].mean()
+    if avg_vol_20 == 0:
+        return None, None
     latest_vol = df["volume"].iloc[-1]
     ratio = latest_vol / avg_vol_20
     return ratio >= multiplier, ratio
@@ -242,7 +257,9 @@ def evaluate_breakout_status(df, asset_name, resistance_name, resistance_level, 
     else:
         gap_pct = ((resistance_level / latest_close) - 1) * 100
         print(f"❌ 條件1：尚未站穩（距離壓力 {gap_pct:.1f}%）")
-    if vol_confirmed:
+    if vol_confirmed is None:
+        print("➖ 條件2：成交量資料不可用（CoinGecko OHLC 不提供量能）")
+    elif vol_confirmed:
         print(f"✅ 條件2：放量確認（量比 {vol_ratio:.2f}x）")
         score += 1
     else:
