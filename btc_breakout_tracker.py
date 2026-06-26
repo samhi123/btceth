@@ -359,8 +359,10 @@ def generate_ai_recommendation(asset_name, config, df, breakout_scores, etf_info
     else:
         etf_text = "資料暫無法取得"
 
+    today_str = datetime.now().strftime("%Y-%m-%d")
     prompt = f"""你是一位專業的加密貨幣技術分析師，請根據以下 {asset_name} 的即時技術數據，
 用繁體中文提供今日操作建議。請保持客觀，不要過度樂觀或悲觀。
+今天日期是：{today_str}
 
 【技術數據】
 - 現價：{fmt(latest['close'], decimals)}
@@ -383,7 +385,7 @@ def generate_ai_recommendation(asset_name, config, df, breakout_scores, etf_info
 
 請依照以下格式回覆（直接輸出，不要有任何前言）：
 
-📊 {asset_name} 今日分析（{{日期}}）
+📊 {asset_name} 今日分析（{today_str}）
 
 🔍 現況判讀
 （2–3句，描述目前趨勢強弱、RSI 位置、量能狀況）
@@ -423,8 +425,7 @@ def generate_ai_recommendation(asset_name, config, df, breakout_scores, etf_info
             block.get("text", "") for block in data.get("content", [])
             if block.get("type") == "text"
         )
-        # 把日期填入（如果模板有佔位符）
-        text = text.replace("{日期}", datetime.now().strftime("%Y-%m-%d"))
+        # 日期已在 prompt 中直接傳入，無需替換
         return text.strip()
     except Exception as e:
         return f"⚠️ Claude API 呼叫失敗：{e}"
