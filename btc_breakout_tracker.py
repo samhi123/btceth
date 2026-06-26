@@ -101,11 +101,27 @@ def fmt(value, decimals=0):
 
 
 def fetch_ohlcv(symbol, interval=INTERVAL, limit=LOOKBACK_DAYS):
-    url = "https://api.binance.com/api/v3/klines"
+    # 多個備用端點，依序嘗試，避免地區封鎖（HTTP 451）
+    endpoints = [
+        "https://api1.binance.com/api/v3/klines",
+        "https://api2.binance.com/api/v3/klines",
+        "https://api3.binance.com/api/v3/klines",
+        "https://api.binance.com/api/v3/klines",
+    ]
     params = {"symbol": symbol, "interval": interval, "limit": limit}
-    resp = requests.get(url, params=params, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
+    last_error = None
+    data = None
+    for url in endpoints:
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except Exception as e:
+            last_error = e
+            continue
+    if data is None:
+        raise Exception(f"所有 Binance 端點均無法連線：{last_error}")
     df = pd.DataFrame(data, columns=[
         "open_time", "open", "high", "low", "close", "volume",
         "close_time", "quote_volume", "trades",
