@@ -2,8 +2,8 @@ name: BTC Breakout Tracker
 
 on:
   schedule:
-    - cron: '45 14 * * *'   # 每天 UTC 01:15 執行（台灣時間早上 09:15，避開整點高負載）
-  workflow_dispatch:          # 允許在 GitHub 網頁手動點擊執行，方便測試
+    - cron: '0 15 * * *'
+  workflow_dispatch:
 
 jobs:
   run-tracker:
