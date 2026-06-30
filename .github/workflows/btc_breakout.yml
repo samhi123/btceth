@@ -2,7 +2,7 @@ name: BTC Breakout Tracker
 
 on:
   schedule:
-    - cron: '0 15 * * *'
+    - cron: '15 1 * * *'
   workflow_dispatch:
 
 jobs:
